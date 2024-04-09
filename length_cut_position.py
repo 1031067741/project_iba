@@ -6,14 +6,17 @@
 import numpy as np
 
 from ibadatfile import IbaDatFile
-from pathlib import Path
+# from pathlib import Path
 import glob
 import pandas as pd
 import gc
 
 if __name__ == '__main__':
-    # 初始化读取参数
-    # 读取步长 不建议过大，防止内存不足
+    # 降采样标志：flag=1表示启用降采样；speed表示采样速率
+    down_sample_flag = 0
+    down_sample_speed = 10
+
+    # 读取步长：不建议过大，防止内存不足
     read_step = 2
     # 记录文件读取序号
     read_start = 1
@@ -25,7 +28,7 @@ if __name__ == '__main__':
     # 初始化输出路径
     output_path = './processed/'
 
-    # 钢卷突变判断阈值
+    # 钢卷长度突变判断阈值
     length_jump = -1000
 
     # 初始化数据文件列表
@@ -86,7 +89,12 @@ if __name__ == '__main__':
                 filename_index = str(coil_index).zfill(3)
                 coil_index = coil_index + 1
                 print(f'正在生成卷{filename_index}.csv')
-                cut_df.to_csv(f'{output_path}卷{filename_index}.csv', index=False)
+                if down_sample_flag == 1:
+                    # 以10的速率进行采样
+                    cut_df = cut_df[::down_sample_speed]
+                    cut_df.to_csv(f'{output_path}(降采样{down_sample_speed}x)卷{filename_index}.csv', index=False)
+                else:
+                    cut_df.to_csv(f'{output_path}卷{filename_index}.csv', index=False)
                 print(f'已生成卷{filename_index}.csv')
                 start_index = end_index
         else:
@@ -105,11 +113,16 @@ if __name__ == '__main__':
             del cut_condition
             del cut_df
         except Exception as e:
-            print("发生错误：", e)
+            print("本轮没有找到分割点：", e)
         gc.collect()
 
     # 已读取全部文件，保存剩余数据
     print(f'正在生成卷{str(coil_index).zfill(3)}.csv')
-    main_df.to_csv(f'{output_path}卷{str(coil_index).zfill(3)}.csv', index=False)
+    if down_sample_flag == 1:
+        # 以10的速率进行采样
+        main_df = main_df[::10]
+        main_df.to_csv(f'{output_path}(降采样{down_sample_speed}x)卷{str(coil_index).zfill(3)}.csv', index=False)
+    else:
+        main_df.to_csv(f'{output_path}卷{str(coil_index).zfill(3)}.csv', index=False)
     print(f'已生成卷{str(coil_index).zfill(3)}.csv')
     print('全部数据分割完成，程序退出')
