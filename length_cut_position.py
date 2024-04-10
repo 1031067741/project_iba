@@ -12,8 +12,9 @@ import pandas as pd
 import gc
 
 if __name__ == '__main__':
-    # 降采样标志：flag=1表示启用降采样；speed表示采样速率
+    # 启用降采样标志
     down_sample_flag = True
+    # 采样速率，间隔X点等速率采样
     down_sample_speed = 10
 
     # 读取步长：不建议过大，防止内存不足
@@ -22,16 +23,17 @@ if __name__ == '__main__':
     read_start = 1
     read_end = read_start + read_step
     # 记录单卷数据文件数量
-    coil_file_num = 1
+    coil_file_num = 0
     # 记录内存不足前能够允许的最大数据文件数量
-    coil_file_num_max = 6
+    coil_file_num_max = 5
     # 记录卷号
     coil_index = 1
     # 记录单卷的分卷号
-    coil_index_part = 1
-
-    produce_stop_index = 1
-    produce_stop_flag = False
+    coil_index_part = 0
+    # 记录当前卷相关的停机序号
+    shutdown_index = 1
+    # 记录是否有停机情况
+    shutdown_flag = False
 
     # 初始化输出路径
     output_path = './processed/'
@@ -44,9 +46,9 @@ if __name__ == '__main__':
     pda_data_path = glob.glob(folder_path + "bao*.dat")
     datafile_len = len(pda_data_path)
 
-    print('读取', pda_data_path[0])
+    print('读取', pda_data_path[read_start - 1])
     # 调用接口读取第一个数据文件
-    with IbaDatFile(pda_data_path[0]) as file:
+    with IbaDatFile(pda_data_path[read_start - 1]) as file:
         main_df = file.data()
     # 找到第一行中值为 True 或 False 的列 (删除模拟量)
     columns_to_drop = main_df.columns[main_df.iloc[0].isin([True, False])]
@@ -92,143 +94,215 @@ if __name__ == '__main__':
         groups = (length_df.shift() != length_df).cumsum()
 
         # 如果长度连续停滞，修改保存的文件名序号
-        if produce_stop_flag:
-            produce_stop_index = produce_stop_index + 1
+        if shutdown_flag:
+            shutdown_index = shutdown_index + 1
         else:
-            produce_stop_index = 1
+            shutdown_index = 1
 
         # 判断长度是否长时间不变化
-        produce_stop_flag = any(length_df.groupby(groups).apply(lambda x: len(x) >= 24000))
+        shutdown_flag = any(length_df.groupby(groups).apply(lambda x: len(x) >= 12000 * (read_step - 1)))
 
-        # 长度长时间不变化
-        if produce_stop_flag:
-            # 计算每个组的大小
-            group_sizes = length_df.groupby(groups).size()
-            # 筛选出大小大于或等于24000的组
-            large_groups = group_sizes[group_sizes >= 24000]
-            # 获取这些组的起始和结束索引
-            produce_stop_start_end_indices = length_df.groupby(groups).apply(lambda x: (x.index[0], x.index[-1])).loc[
-                large_groups.index]
-            # 将起始和结束索引存储在变量中
-            product_stop_start, product_stop_end = produce_stop_start_end_indices.iloc[0]
-            filename_index = str(coil_index).zfill(3)
-            produce_stop_cut_df = main_df.iloc[:product_stop_end]
-            if coil_index_part > 1:
+        # 如果本轮找到分割点
+        if len(cut_list) > 0:
+            # 初始化分割序号
+            start_index = 1
+            print('本轮分割点索引：', cut_list)
+            # 重置本卷数据文件数量计数
+            coil_file_num = read_step
+            # 根据分割列表导出保存数据
+            for i, end_index in enumerate(cut_list, start=1):
+                cut_df = main_df.iloc[start_index:end_index]
+                filename_index = str(coil_index).zfill(3)
+                coil_index = coil_index + 1
                 if down_sample_flag:
                     # 以down_sample_speed的速率进行降采样
-                    produce_stop_cut_df = produce_stop_cut_df[::down_sample_speed]
-                    print(f'正在生成：(降采样{down_sample_speed}x)卷{filename_index}part{coil_index_part}中停机part{produce_stop_index}')
-                    produce_stop_cut_df.to_csv(f'{output_path}(降采样{down_sample_speed}x)卷{filename_index}part{coil_index_part}中停机part{produce_stop_index}.csv',index=False)
-                    print(f'已生成：(降采样{down_sample_speed}x)卷{filename_index}part{coil_index_part}中停机part{produce_stop_index}')
+                    cut_df = cut_df[::down_sample_speed]
+                    if coil_index_part > 0:
+                        coil_index_part = coil_index_part + 1
+                        print(f'正在生成：(降采样{down_sample_speed}x)卷{filename_index}part{coil_index_part}')
+                        # cut_df.to_csv(
+                        #     f'{output_path}(降采样{down_sample_speed}x)卷{filename_index}part{coil_index_part}.csv',
+                        #     index=False)
+                        print(f'已生成：  (降采样{down_sample_speed}x)卷{filename_index}part{coil_index_part}')
+                        coil_index_part = 0
+                    else:
+                        print(f'正在生成：(降采样{down_sample_speed}x)卷{filename_index}')
+                        # cut_df.to_csv(f'{output_path}(降采样{down_sample_speed}x)卷{filename_index}.csv', index=False)
+                        print(f'已生成：  (降采样{down_sample_speed}x)卷{filename_index}')
                 else:
-                    print(f'正在生成：卷{filename_index}part{coil_index_part}中停机part{produce_stop_index}')
-                    produce_stop_cut_df.to_csv(f'{output_path}卷{filename_index}part{coil_index_part}中停机part{produce_stop_index}.csv',index=False)
-                    print(f'已生成：卷{filename_index}part{coil_index_part}中停机part{produce_stop_index}')
-            else:
-                if down_sample_flag:
-                    # 以down_sample_speed的速率进行降采样
-                    produce_stop_cut_df = produce_stop_cut_df[::down_sample_speed]
-                    print(f'正在生成：(降采样{down_sample_speed}x)卷{filename_index}前停机part{produce_stop_index}')
-                    produce_stop_cut_df.to_csv(f'{output_path}(降采样{down_sample_speed}x)卷{filename_index}前停机part{produce_stop_index}.csv',index=False)
-                    print(f'已生成：(降采样{down_sample_speed}x)卷{filename_index}前停机part{produce_stop_index}')
-                else:
-                    print(f'正在生成：卷{filename_index}前停机part{produce_stop_index}')
-                    produce_stop_cut_df.to_csv(f'{output_path}卷{filename_index}前停机part{produce_stop_index}.csv', index=False)
-                    print(f'已生成：卷{filename_index}前停机part{produce_stop_index}')
+                    if coil_index_part > 0:
+                        coil_index_part = coil_index_part + 1
+                        print(f'正在生成：卷{filename_index}part{coil_index_part}')
+                        # cut_df.to_csv(f'{output_path}卷{filename_index}part{coil_index_part}.csv', index=False)
+                        print(f'已生成：  卷{filename_index}part{coil_index_part}')
+                        coil_index_part = 0
+                    else:
+                        print(f'正在生成：卷{filename_index}')
+                        # cut_df.to_csv(f'{output_path}卷{filename_index}.csv', index=False)
+                        print(f'已生成：  卷{filename_index}')
+                start_index = end_index
 
-            main_df = main_df.iloc[product_stop_end:]
-            # 重置索引并丢弃旧的索引列
-            main_df = main_df.reset_index(drop=True)
+            #   判断在当前卷生产完成后停机，没有及时切断的情况
+            if shutdown_flag:
+                # 计算每个组的大小
+                group_sizes = length_df.groupby(groups).size()
+                # 筛选出大小大于或等于24000的组
+                large_groups = group_sizes[group_sizes >= 12000 * (read_step - 1)]
+                # 获取这些组的起始和结束索引
+                shutdown_start_end_indices = \
+                    length_df.groupby(groups).apply(lambda x: (x.index[0], x.index[-1])).loc[
+                        large_groups.index]
+                # 将起始和结束索引存储在变量中
+                shutdown_start, shutdown_end = shutdown_start_end_indices.iloc[0]
+                shutdown_index = 1
+                print('start_index:',start_index)
+                print('shutdown_start',shutdown_start)
+                print('shutdown_end:',shutdown_end)
 
-            # 清理内存
-            del produce_stop_cut_df
-            del groups
-            del large_groups
-            del group_sizes
-            del produce_stop_start_end_indices
-            del product_stop_start
-            del product_stop_end
-            gc.collect()
+                if start_index < shutdown_end:
+                    shutdown_cut_df = main_df.iloc[start_index:shutdown_end]
+                elif start_index > shutdown_end:
+                    try:
+                        shutdown_start_2, shutdown_end_2 = shutdown_start_end_indices.iloc[1]
+                        if shutdown_end_2 <= len(length_df) and start_index <= shutdown_start_2:
+                            shutdown_cut_df = main_df.iloc[start_index:shutdown_end_2]
+                            main_df = main_df.iloc[shutdown_end_2:]
+                        del shutdown_start_2
+                        del shutdown_end_2
+                    except Exception as e:
+                        print('发生错误：',e)
+                        shutdown_cut_df = main_df.iloc[start_index:]
 
-        # 生产正常进行
-        else:
-            # 如果本轮找到分割点
-            if len(cut_list) > 0 :
-                # 初始化分割序号
-                start_index = 1
-                print('本轮分割点索引：', cut_list)
-                # 重置本卷数据文件数量计数
-                coil_file_num = 1
-                # 根据分割列表导出保存数据
-                for i, end_index in enumerate(cut_list, start=1):
-                    cut_df = main_df.iloc[start_index:end_index]
-                    filename_index = str(coil_index).zfill(3)
-                    coil_index = coil_index + 1
+                        # 清空dataframe
+                        main_df.drop(main_df.index, inplace=True)
+                        gc.collect()
 
                     if down_sample_flag:
                         # 以down_sample_speed的速率进行降采样
-                        cut_df = cut_df[::down_sample_speed]
-                        if coil_index_part > 1:
-                            print(f'正在生成：(降采样{down_sample_speed}x)卷{filename_index}part{coil_index_part}')
-                            cut_df.to_csv(f'{output_path}(降采样{down_sample_speed}x)卷{filename_index}part{coil_index_part}.csv',index=False)
-                            print(f'已生成：  (降采样{down_sample_speed}x)卷{filename_index}part{coil_index_part}')
-                            coil_index_part = 1
-                        else:
-                            print(f'正在生成：(降采样{down_sample_speed}x)卷{filename_index}')
-                            cut_df.to_csv(f'{output_path}(降采样{down_sample_speed}x)卷{filename_index}.csv', index=False)
-                            print(f'已生成：  (降采样{down_sample_speed}x)卷{filename_index}')
+                        shutdown_cut_df = shutdown_cut_df[::down_sample_speed]
+                        print(
+                            f'正在生成：(降采样{down_sample_speed}x)卷{str(coil_index).zfill(3)}前停机part{shutdown_index}')
+                        shutdown_cut_df.to_csv(
+                            f'{output_path}(降采样{down_sample_speed}x)卷{str(coil_index).zfill(3)}前停机part{shutdown_index}.csv',
+                            index=False)
+                        print(
+                            f'已生成：(降采样{down_sample_speed}x)卷{str(coil_index).zfill(3)}前停机part{shutdown_index}')
                     else:
-                        if coil_index_part > 1:
-                            print(f'正在生成：卷{filename_index}part{coil_index_part}')
-                            cut_df.to_csv(f'{output_path}卷{filename_index}part{coil_index_part}.csv', index=False)
-                            print(f'已生成：  卷{filename_index}part{coil_index_part}')
-                            coil_index_part = 1
-                        else:
-                            print(f'正在生成：卷{filename_index}')
-                            cut_df.to_csv(f'{output_path}卷{filename_index}.csv', index=False)
-                            print(f'已生成：  卷{filename_index}')
-                    start_index = end_index
+                        print(f'正在生成：卷{str(coil_index).zfill(3)}前停机part{shutdown_index}')
+                        shutdown_cut_df.to_csv(
+                            f'{output_path}卷{str(coil_index).zfill(3)}前停机part{shutdown_index}.csv', index=False)
+                        print(f'已生成：卷{str(coil_index).zfill(3)}前停机part{shutdown_index}')
 
-                    coil_file_num = 1
-
-                    # 保存本轮的末端数据进行下一轮拼接
-                    main_df = main_df.iloc[start_index:]
-                    # 重置索引并丢弃旧的索引列
-                    main_df = main_df.reset_index(drop=True)
-
-            # 如果本轮没有找到分割点
-            else:
-                # 减少下一轮文件读取数量，防止内存不足
-                read_end = read_start + 1
-                print(read_start ,read_end)
-                # 记录本卷生产数据的文件数量
-                coil_file_num = coil_file_num + 1
-                if coil_file_num >= coil_file_num_max:
-                    print(f'正在生成：卷{str(coil_index).zfill(3)}part{coil_index_part}')
-                    if down_sample_flag:
-                        # 以down_sample_speed的速率进行降采样
-                        main_df = main_df[::down_sample_speed]
-                        print(f'正在生成：(降采样{down_sample_speed}x)卷{str(coil_index).zfill(3)}part{coil_index_part}')
-                        main_df.to_csv(f'{output_path}(降采样{down_sample_speed}x)卷{str(coil_index).zfill(3)}part{coil_index_part}.csv',
-                                       index=False)
-                        print(f'已生成：  (降采样{down_sample_speed}x)卷{str(coil_index).zfill(3)}part{coil_index_part}')
-                    else:
-                        print(f'正在生成：卷{str(coil_index).zfill(3)}part{coil_index_part}')
-                        main_df.to_csv(f'{output_path}卷{str(coil_index).zfill(3)}part{coil_index_part}.csv', index=False)
-                        print(f'已生成：  卷{str(coil_index).zfill(3)}part{coil_index_part}')
-
-                    coil_index_part = coil_index_part + 1
-
-                    # 清空dataframe
-                    main_df.drop(main_df.index, inplace=True)
+                    # 清理内存
+                    del shutdown_cut_df
+                    del groups
+                    del large_groups
+                    del group_sizes
+                    del shutdown_start_end_indices
+                    del shutdown_start
+                    del shutdown_end
                     gc.collect()
+            else:
+                # 保存本轮的末端数据以进行下一轮拼接
+                main_df = main_df.iloc[start_index:]
+                # 重置索引并丢弃旧的索引列
+                main_df = main_df.reset_index(drop=True)
 
-                    # 重置本卷数据文件数量计数
-                    coil_file_num = 1
+        # 如果本轮没有找到分割点
+        else:
+            # 减少下一轮文件读取数量，防止内存不足
+            read_end = read_start + 1
+            # print(read_start ,read_end)
+            # 记录本卷数据的文件数量
+            coil_file_num = coil_file_num + 1
 
-        print('长时间停机：',produce_stop_flag)
-        print('------------------------------------')
+            # 本卷长度超过文件读取数量阈值
+            if coil_file_num >= coil_file_num_max:
+                coil_index_part = coil_index_part + 1
+                shutdown_index = 1
+                print(f'正在生成：卷{str(coil_index).zfill(3)}part{coil_index_part}')
+                if down_sample_flag:
+                    # 以down_sample_speed的速率进行降采样
+                    main_df = main_df[::down_sample_speed]
+                    print(f'正在生成：(降采样{down_sample_speed}x)卷{str(coil_index).zfill(3)}part{coil_index_part}')
+                    main_df.to_csv(f'{output_path}(降采样{down_sample_speed}x)卷{str(coil_index).zfill(3)}part{coil_index_part}.csv',
+                                   index=False)
+                    print(f'已生成：  (降采样{down_sample_speed}x)卷{str(coil_index).zfill(3)}part{coil_index_part}')
+                else:
+                    print(f'正在生成：卷{str(coil_index).zfill(3)}part{coil_index_part}')
+                    main_df.to_csv(f'{output_path}卷{str(coil_index).zfill(3)}part{coil_index_part}.csv', index=False)
+                    print(f'已生成：  卷{str(coil_index).zfill(3)}part{coil_index_part}')
 
+                # 清空dataframe
+                main_df.drop(main_df.index, inplace=True)
+                gc.collect()
+                # 重置本卷数据文件数量计数
+                coil_file_num = 0
+
+
+            # 如果长时间停机
+            if shutdown_flag:
+                coil_file_num = read_step
+                # 计算每个组的大小
+                group_sizes = length_df.groupby(groups).size()
+                # 筛选出大小大于或等于24000的组
+                large_groups = group_sizes[group_sizes >= 12000 * (read_step - 1)]
+                # 获取这些组的起始和结束索引
+                shutdown_start_end_indices = \
+                    length_df.groupby(groups).apply(lambda x: (x.index[0], x.index[-1])).loc[
+                        large_groups.index]
+                # 将起始和结束索引存储在变量中
+                shutdown_start, shutdown_end = shutdown_start_end_indices.iloc[0]
+                shutdown_cut_df = main_df.iloc[:shutdown_end]
+                if coil_index_part > 0:
+                    if down_sample_flag:
+                        # 以down_sample_speed的速率进行降采样
+                        shutdown_cut_df = shutdown_cut_df[::down_sample_speed]
+                        print(
+                            f'正在生成：(降采样{down_sample_speed}x)卷{str(coil_index).zfill(3)}part{coil_index_part}中停机part{shutdown_index}')
+                        shutdown_cut_df.to_csv(
+                            f'{output_path}(降采样{down_sample_speed}x)卷{str(coil_index).zfill(3)}part{coil_index_part}中停机part{shutdown_index}.csv',
+                            index=False)
+                        print(
+                            f'已生成：(降采样{down_sample_speed}x)卷{str(coil_index).zfill(3)}part{coil_index_part}中停机part{shutdown_index}')
+                    else:
+                        print(f'正在生成：卷{str(coil_index).zfill(3)}part{coil_index_part}中停机part{shutdown_index}')
+                        shutdown_cut_df.to_csv(
+                            f'{output_path}卷{str(coil_index).zfill(3)}part{coil_index_part}中停机part{shutdown_index}.csv',
+                            index=False)
+                        print(f'已生成：卷{str(coil_index).zfill(3)}part{coil_index_part}中停机part{shutdown_index}')
+                else:
+                    if down_sample_flag:
+                        # 以down_sample_speed的速率进行降采样
+                        shutdown_cut_df = shutdown_cut_df[::down_sample_speed]
+                        print(
+                            f'正在生成：(降采样{down_sample_speed}x)卷{str(coil_index).zfill(3)}前停机part{shutdown_index}')
+                        shutdown_cut_df.to_csv(
+                            f'{output_path}(降采样{down_sample_speed}x)卷{str(coil_index).zfill(3)}前停机part{shutdown_index}.csv',
+                            index=False)
+                        print(
+                            f'已生成：(降采样{down_sample_speed}x)卷{str(coil_index).zfill(3)}前停机part{shutdown_index}')
+                    else:
+                        print(f'正在生成：卷{str(coil_index).zfill(3)}前停机part{shutdown_index}')
+                        shutdown_cut_df.to_csv(
+                            f'{output_path}卷{str(coil_index).zfill(3)}前停机part{shutdown_index}.csv', index=False)
+                        print(f'已生成：卷{str(coil_index).zfill(3)}前停机part{shutdown_index}')
+
+                main_df = main_df.iloc[shutdown_end:]
+                # 重置索引并丢弃旧的索引列
+                main_df = main_df.reset_index(drop=True)
+
+                read_end = read_start + read_step
+
+                # 清理内存
+                del shutdown_cut_df
+                del groups
+                del large_groups
+                del group_sizes
+                del shutdown_start_end_indices
+                del shutdown_start
+                del shutdown_end
+                gc.collect()
         # 内存清理
         try:
             del length_df
@@ -241,9 +315,12 @@ if __name__ == '__main__':
         except Exception as e:
             print("本轮没有找到分割点：", e)
         gc.collect()
+        print('长时间停机：',shutdown_flag)
+        print('------------------------------------')
 
-    # 已读取全部文件，保存剩余数据
 
+
+    # 已读取全部文件，保存尾段剩余数据
     if down_sample_flag:
         # 以down_sample_speed的速率进行降采样
         main_df = main_df[::down_sample_speed]
